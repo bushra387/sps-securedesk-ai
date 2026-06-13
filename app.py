@@ -1,6 +1,13 @@
+import sys
+import os
+from pathlib import Path
+
+# Now Python can find 'backend'
+from backend.services.email_service import process_inbound_emails
 import streamlit as st
 import requests
 import pandas as pd
+
 
 # --- Page Config ---
 st.set_page_config(page_title="SPS SecureDesk AI", page_icon="🤖", layout="wide")
@@ -97,6 +104,17 @@ with all_tabs[1]:
 if user_role == "Support Agent":
     with all_tabs[2]:
         st.header("Agent Queue")
+        
+        # --- ADD BUTTON HERE ---
+        if st.button("Sync New Emails"):
+            with st.spinner("Checking inbox..."):
+                try:
+                    process_inbound_emails()
+                    st.success("Sync Complete!")
+                    st.rerun() # Refresh the page to show the new tickets
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+    
         
         if st.button("Refresh Queue"):
             try:
