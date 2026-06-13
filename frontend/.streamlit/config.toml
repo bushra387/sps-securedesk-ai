@@ -1,0 +1,6 @@
+[theme]
+primaryColor = "#2C2C54"  # Deep Navy/Purple from the SPS site
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F4F9" # Very light grey for section backgrounds
+textColor = "#333333"
+font = "sans serif"
