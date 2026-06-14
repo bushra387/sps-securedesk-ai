@@ -1,15 +1,19 @@
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from backend.database import supabase
 from backend.config import settings
 
-# Initialize the LLM (Ensure you have OPENAI_API_KEY in your .env)
-llm = ChatOpenAI(model="gpt-4o-mini", api_key=settings.OPENAI_API_KEY)
+# Initialize the Gemini LLM
+# Ensure GEMINI_API_KEY is in your .env and settings
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash", 
+    google_api_key=settings.GEMINI_API_KEY
+)
+
 def get_answer_from_kb(query: str):
-    # 1. REMOVED .ilike to fetch all data so the AI can process it
+    # 1. Fetch data from Supabase
     response = supabase.table("kb_articles").select("title, content").execute()
     
-    # 2. Extract content from all articles
-    # This ensures the AI sees the title and the content to make sense of it
+    # 2. Extract content
     context_text = "\n\n".join([f"Title: {item['title']}\nContent: {item['content']}" for item in response.data])
     
     if not response.data:
@@ -28,5 +32,6 @@ def get_answer_from_kb(query: str):
     """
     
     # 4. Get AI response
+    # LangChain's invoke() works exactly the same for Gemini
     ai_response = llm.invoke(prompt)
     return ai_response.content

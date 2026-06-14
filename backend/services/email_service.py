@@ -5,7 +5,7 @@ import imaplib
 import email
 from email.header import decode_header
 
-# This ensures that even when called from frontend, it can find backend.database
+# Ensure backend can be imported
 root_path = str(Path(__file__).resolve().parent.parent.parent)
 if root_path not in sys.path:
     sys.path.append(root_path)
@@ -21,6 +21,7 @@ def process_inbound_emails():
 
     mail = None
     try:
+        print("DEBUG: Connecting to Gmail...")
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(email_user, email_pass)
         mail.select("inbox")
@@ -29,8 +30,15 @@ def process_inbound_emails():
         if status != 'OK' or not messages[0]:
             return "No new emails"
 
-        for num in messages[0].split():
+        # LIMIT TO LAST 5 EMAILS to prevent hanging
+        email_ids = messages[0].split()
+        recent_ids = email_ids[-5:] 
+        print(f"DEBUG: Found {len(email_ids)} unread, processing last {len(recent_ids)}...")
+
+        for num in recent_ids:
+            print(f"DEBUG: Fetching email {num.decode()}...")
             _, msg_data = mail.fetch(num, "(RFC822)")
+            
             for response_part in msg_data:
                 if isinstance(response_part, tuple):
                     msg = email.message_from_bytes(response_part[1])
@@ -43,9 +51,11 @@ def process_inbound_emails():
                         for part in msg.walk():
                             if part.get_content_type() == "text/plain":
                                 body = part.get_payload(decode=True).decode(errors='ignore')
+                                break # Stop after finding the first text body
                     else:
                         body = msg.get_payload(decode=True).decode(errors='ignore')
 
+                    print(f"DEBUG: Inserting ticket for: {subject}")
                     ticket_res = supabase.table("tickets").insert({
                         "subject": subject,
                         "requester_email": msg.get("From"),
@@ -55,17 +65,22 @@ def process_inbound_emails():
                     }).execute()
                     
                     ticket_id = ticket_res.data[0]['id']
+                    print(f"DEBUG: Inserting message for ticket {ticket_id}")
                     supabase.table("ticket_messages").insert({
                         "ticket_id": ticket_id,
                         "sender_type": "user",
                         "content": body
                     }).execute()
                     
+                    # Mark as seen so we don't process it again next time
                     mail.store(num, '+FLAGS', '\\Seen')
+                    print(f"DEBUG: Successfully processed email {num.decode()}")
+                    
         return "Sync Complete"
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"CRITICAL ERROR: {e}")
         raise e
     finally:
         if mail:
             mail.logout()
+            print("DEBUG: Logged out.")
