@@ -1,86 +1,155 @@
 import sys
 import os
-from pathlib import Path
+import uuid
+import re
+import smtplib
 import imaplib
 import email
 from email.header import decode_header
-
-# Ensure backend can be imported
-root_path = str(Path(__file__).resolve().parent.parent.parent)
-if root_path not in sys.path:
-    sys.path.append(root_path)
-
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.utils import parseaddr
+from datetime import datetime
 from backend.database import supabase
 
+# --- OUTBOUND EMAIL FUNCTION ---
+def send_confirmation(to_email, ticket_id, subject):
+    
+    """Sends an automated confirmation email to the user."""
+    smtp_user = os.getenv("EMAIL_USER")
+    smtp_pass = os.getenv("EMAIL_PASS")
+    
+    if not smtp_user or not smtp_pass:
+        print("SMTP Credentials missing.")
+        return
+
+    msg = MIMEMultipart()
+    msg['From'] = f"SPS SecureDeskAI <{smtp_user}>"
+    msg['To'] = to_email
+    msg['Subject'] = f"SPS SecureDesk: Ticket {ticket_id} Received"
+    
+    body = f"""
+    <h3>Your request has been received</h3>
+    <p>We have successfully created a ticket for your inquiry.</p>
+    <p><strong>Ticket ID:</strong> {ticket_id}</p>
+    <p><strong>Subject:</strong> {subject}</p>
+    <p>Our support team will get back to you shortly.</p>
+    """
+    msg.attach(MIMEText(body, 'html'))
+    
+    try:
+        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_user, to_email, msg.as_string())
+        server.quit()
+        print(f"Confirmation sent to {to_email}")
+    except Exception as e:
+        print(f"Failed to send email confirmation: {e}")
+
+# --- INBOUND EMAIL PROCESSOR ---
 def process_inbound_emails():
     email_user = os.getenv("EMAIL_USER")
     email_pass = os.getenv("EMAIL_PASS")
 
-    if not email_user or not email_pass:
-        raise Exception("Missing EMAIL_USER or EMAIL_PASS in .env file")
-
     mail = None
     try:
-        print("DEBUG: Connecting to Gmail...")
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(email_user, email_pass)
-        mail.select("inbox")
+        mail.select('"[Gmail]/All Mail"')
 
         status, messages = mail.search(None, 'UNSEEN')
+        
         if status != 'OK' or not messages[0]:
             return "No new emails"
 
-        # LIMIT TO LAST 5 EMAILS to prevent hanging
-        email_ids = messages[0].split()
-        recent_ids = email_ids[-5:] 
-        print(f"DEBUG: Found {len(email_ids)} unread, processing last {len(recent_ids)}...")
-
-        for num in recent_ids:
-            print(f"DEBUG: Fetching email {num.decode()}...")
+        for num in messages[0].split():
             _, msg_data = mail.fetch(num, "(RFC822)")
+            msg = email.message_from_bytes(msg_data[0][1])
             
-            for response_part in msg_data:
-                if isinstance(response_part, tuple):
-                    msg = email.message_from_bytes(response_part[1])
-                    
-                    subject_raw = decode_header(msg["Subject"])[0][0]
-                    subject = subject_raw.decode() if isinstance(subject_raw, bytes) else str(subject_raw)
-                    
-                    body = ""
-                    if msg.is_multipart():
-                        for part in msg.walk():
-                            if part.get_content_type() == "text/plain":
-                                body = part.get_payload(decode=True).decode(errors='ignore')
-                                break # Stop after finding the first text body
-                    else:
-                        body = msg.get_payload(decode=True).decode(errors='ignore')
+            # Extract Subject
+            subject_raw = decode_header(msg["Subject"])[0][0]
+            subject = subject_raw.decode() if isinstance(subject_raw, bytes) else str(subject_raw)
+            
+            # Extract Sender Email
+            _, sender_email = parseaddr(msg.get("From"))
+            
+            # Extract Body
+            body = ""
+            if msg.is_multipart():
+                for part in msg.walk():
+                    if part.get_content_type() == "text/plain":
+                        body = part.get_payload(decode=True).decode(errors='ignore')
+                        break
+            else:
+                body = msg.get_payload(decode=True).decode(errors='ignore')
 
-                    print(f"DEBUG: Inserting ticket for: {subject}")
-                    ticket_res = supabase.table("tickets").insert({
-                        "subject": subject,
-                        "requester_email": msg.get("From"),
-                        "status": "New",
-                        "source": "email",
-                        "category": "General IT"
-                    }).execute()
-                    
-                    ticket_id = ticket_res.data[0]['id']
-                    print(f"DEBUG: Inserting message for ticket {ticket_id}")
-                    supabase.table("ticket_messages").insert({
-                        "ticket_id": ticket_id,
-                        "sender_type": "user",
-                        "content": body
-                    }).execute()
-                    
-                    # Mark as seen so we don't process it again next time
-                    mail.store(num, '+FLAGS', '\\Seen')
-                    print(f"DEBUG: Successfully processed email {num.decode()}")
-                    
+            # Logic: Check if this is a reply to an existing ticket
+            match = re.search(r"\[(SPS-\d{4}-[A-Z0-9]+)\]", subject)
+            
+            if match:
+                ticket_id_ref = match.group(1)
+                supabase.table("ticket_messages").insert({
+                    "ticket_id": ticket_id_ref,
+                    "sender_type": "user",
+                    "content": f"Email reply: {body}"
+                }).execute()
+            else:
+                # NEW TICKET CREATION
+                new_ticket_id = f"SPS-{datetime.now().year}-{str(uuid.uuid4())[:4].upper()}"
+                
+                supabase.table("tickets").insert({
+                    "id": new_ticket_id,
+                    "subject": subject,
+                    "requester_email": sender_email,
+                    "status": "Open",
+                    "source": "email",
+                    "priority": "Medium"
+                }).execute()
+                
+                supabase.table("ticket_messages").insert({
+                    "ticket_id": new_ticket_id,
+                    "sender_type": "system",
+                    "content": f"Ticket created from email: {body}"
+                }).execute()
+                
+                # TRIGGER CONFIRMATION
+                send_confirmation(sender_email, new_ticket_id, subject)
+            
+            mail.store(num, '+FLAGS', '\\Seen')
+            
         return "Sync Complete"
-    except Exception as e:
-        print(f"CRITICAL ERROR: {e}")
-        raise e
     finally:
-        if mail:
-            mail.logout()
-            print("DEBUG: Logged out.")
+        if mail: mail.logout()
+def send_agent_reply(to_email, ticket_id, reply_content):
+    """Sends an agent's response to the requester."""
+    smtp_user = os.getenv("EMAIL_USER")
+    smtp_pass = os.getenv("EMAIL_PASS")
+    
+    if not smtp_user or not smtp_pass:
+        print("SMTP Credentials missing.")
+        return
+
+    msg = MIMEMultipart()
+    msg['From'] = f"SPS SecureDeskAI <{smtp_user}>"
+    msg['To'] = to_email
+    # Including the [SPS-ID] in the subject is vital for Gmail/Outlook threading
+    msg['Subject'] = f"Re: [{ticket_id}] Support Update"
+    
+    body = f"""
+    <p>Hello,</p>
+    <p>An agent has updated your support ticket:</p>
+    <div style="background-color: #f9f9f9; padding: 10px; border-left: 3px solid #002060;">
+        {reply_content}
+    </div>
+    <p>Thank you for using SPS SecureDesk.</p>
+    """
+    msg.attach(MIMEText(body, 'html'))
+    
+    try:
+        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_user, to_email, msg.as_string())
+        server.quit()
+        print(f"Agent reply sent to {to_email} for ticket {ticket_id}")
+    except Exception as e:
+        print(f"Failed to send agent reply: {e}")

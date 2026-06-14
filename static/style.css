@@ -1,0 +1,57 @@
+/* SPS Enterprise Theme */
+:root {
+    --sps-navy: #0a126e; /* Matches SPS branding */
+    --sps-bg: #f2f1f6;
+}
+
+/* Sidebar Styling */
+[data-testid="stSidebar"] {
+    background-color: var(--sps-navy) !important;
+    color: #150741 !important;
+}
+
+[data-testid="stSidebar"] * {
+    color: #150741 !important;
+}
+
+/* Page Background */
+.stApp {
+    background-color: var(--sps-bg);
+}
+
+/* Professional Buttons */
+div.stButton > button {
+    border-radius: 4px;
+    background-color: var(--sps-navy);
+    color: white;
+    font-weight: 600;
+    border: none;
+    transition: 0.3s;
+}
+
+div.stButton > button:hover {
+    filter: brightness(1.2);
+}
+
+/* Card Styling for forms */
+[data-testid="stVerticalBlock"] {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+/* Sidebar Branding to match SPS corporate identity */
+[data-testid="stSidebar"] {
+    background-color: #60bcf1 !important; /* Deep Navy Blue */
+}
+
+/* Ensure all text/icons inside the sidebar are white */
+[data-testid="stSidebar"] * {
+    color: #150741 !important;
+}
+
+/* Optional: Style the radio buttons/labels to look better on dark blue */
+[data-testid="stSidebar"] label {
+    color: #150741 !important;
+    font-weight: 500;
+}

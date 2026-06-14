@@ -3,6 +3,40 @@ from pydantic import BaseModel
 from typing import Optional
 from backend.database import supabase
 from backend.services.ai_service import get_answer_from_kb
+import uuid
+from datetime import datetime
+
+from backend.services.email_service import send_ticket_confirmation
+
+@app.post("/tickets")
+def create_ticket(ticket: TicketCreate):
+    try:
+        new_ticket_id = f"SPS-{datetime.now().year}-{str(uuid.uuid4())[:4].upper()}"
+        
+        # 1. Create Ticket
+        supabase.table("tickets").insert({
+            "id": new_ticket_id,
+            "subject": ticket.subject,
+            "requester_email": ticket.requester_email,
+            "category": ticket.category,
+            "source": ticket.source,
+            "status": "Open",
+            "priority": ticket.priority 
+        }).execute()
+        
+        # 2. Add Message
+        supabase.table("ticket_messages").insert({
+            "ticket_id": new_ticket_id,
+            "sender_type": "user",
+            "content": ticket.description
+        }).execute()
+
+        # 3. Trigger Email Notification
+        send_ticket_confirmation(ticket.requester_email, new_ticket_id, ticket.subject)
+        
+        return {"ticket_id": new_ticket_id, "message": "Ticket created and notification sent"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 app = FastAPI(title="SPS SecureDesk AI API")
 
@@ -15,11 +49,12 @@ class TicketCreate(BaseModel):
     description: str
     requester_email: str
     category: str
-    source: str  # "email", "portal_form", "chat"
+    source: str 
+    priority: str  # ADDED: Priority field
 
 class MessageAdd(BaseModel):
-    ticket_id: int
-    sender_type: str  # "user", "agent"
+    ticket_id: str 
+    sender_type: str 
     content: str
 
 # --- Endpoints ---
@@ -28,7 +63,6 @@ class MessageAdd(BaseModel):
 def read_root():
     return {"message": "SPS SecureDesk AI is live"}
 
-# 1. Unified Chat Endpoint (The Chat Channel)
 @app.post("/chat")
 def chat_with_kb(request: QueryRequest):
     try:
@@ -37,38 +71,38 @@ def chat_with_kb(request: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 2. Ticket Creation Endpoint (The Web Form & Escalation Channel)
 @app.post("/tickets")
 def create_ticket(ticket: TicketCreate):
+    # 1. AI Classification
+    # We ignore the user's manual category and let AI decide (or use AI to validate)
+    ai_category = classify_ticket(ticket.subject, ticket.description)
+    
     try:
-        # 1. Create the Ticket
-        ticket_res = supabase.table("tickets").insert({
+        new_ticket_id = f"SPS-{datetime.now().year}-{str(uuid.uuid4())[:4].upper()}"
+        
+        supabase.table("tickets").insert({
+            "id": new_ticket_id,
             "subject": ticket.subject,
             "requester_email": ticket.requester_email,
-            "category": ticket.category,
+            "category": ai_category, # Use AI category
             "source": ticket.source,
-            "status": "New"
+            "status": "Open",
+            "priority": ticket.priority
         }).execute()
         
-        ticket_id = ticket_res.data[0]['id']
-        
-        # 2. Add the initial description as the first message
+        # 2. Add the initial description
         supabase.table("ticket_messages").insert({
-            "ticket_id": ticket_id,
+            "ticket_id": new_ticket_id,
             "sender_type": "user",
             "content": ticket.description
         }).execute()
         
-        return {"ticket_id": ticket_id, "message": "Ticket created successfully"}
+        return {"ticket_id": new_ticket_id, "message": "Ticket created successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 3. Get Ticket & Timeline (For Portal/Agent View)
-# --- Unified Ticket Management ---
-
 @app.get("/tickets/all")
 def get_all_tickets():
-    """Fetches all tickets for the Agent Dashboard."""
     try:
         response = supabase.table("tickets").select("*").order("created_at", desc=True).execute()
         return response.data
@@ -76,12 +110,9 @@ def get_all_tickets():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/tickets/{ticket_id}")
-def get_ticket(ticket_id: int):
-    """Fetches full ticket details and message history (The Timeline)."""
+def get_ticket(ticket_id: str):
     try:
-        # Fetch ticket details
         ticket = supabase.table("tickets").select("*").eq("id", ticket_id).single().execute()
-        # Fetch all messages for this ticket
         messages = supabase.table("ticket_messages").select("*").eq("ticket_id", ticket_id).order("created_at").execute()
         
         return {
@@ -90,7 +121,7 @@ def get_ticket(ticket_id: int):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-# 4. Add Message (Reply from Agent or User)
+
 @app.post("/tickets/message")
 def add_message(msg: MessageAdd):
     try:
@@ -102,3 +133,11 @@ def add_message(msg: MessageAdd):
         return {"status": "Message added"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+# In your API endpoint that updates ticket status
+def update_ticket_status(ticket_id: str, new_status: str):
+    # 1. Update Database
+    supabase.table("tickets").update({"status": new_status}).eq("id", ticket_id).execute()
+    
+    # 2. Notify User via Email
+    requester = get_requester_email(ticket_id) # Helper to fetch email
+    send_email(requester, f"Ticket {ticket_id} is now {new_status}")        
