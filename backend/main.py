@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import supabase
@@ -9,6 +10,15 @@ import uuid
 from datetime import datetime
 
 app = FastAPI(title="SPS SecureDesk AI API")
+
+# FIX: Allow Frontend to communicate with Backend (CORS)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- Models ---
 class QueryRequest(BaseModel):
@@ -25,12 +35,12 @@ class MessageAdd(BaseModel):
     ticket_id: str 
     sender_type: str 
     content: str
+    is_public: bool = True
 
 class StatusUpdate(BaseModel):
     new_status: str
 
 # --- Endpoints ---
-
 @app.get("/")
 def read_root():
     return {"message": "SPS SecureDesk AI is live"}
@@ -45,14 +55,10 @@ def chat_with_kb(request: QueryRequest):
 
 @app.post("/tickets")
 def create_ticket(ticket: TicketCreate):
-    # 1. Sanitize & Classify
     clean_desc = sanitize_and_log(ticket.description, "web_form")
     ai_category = classify_ticket(ticket.subject, clean_desc)
-    
     try:
         new_ticket_id = f"SPS-{datetime.now().year}-{str(uuid.uuid4())[:4].upper()}"
-        
-        # 2. Insert Ticket
         supabase.table("tickets").insert({
             "id": new_ticket_id,
             "subject": ticket.subject,
@@ -62,17 +68,12 @@ def create_ticket(ticket: TicketCreate):
             "status": "Open",
             "priority": ticket.priority
         }).execute()
-        
-        # 3. Add Message
         supabase.table("ticket_messages").insert({
             "ticket_id": new_ticket_id,
             "sender_type": "user",
             "content": clean_desc
         }).execute()
-        
-        # 4. Notify User
         send_confirmation(ticket.requester_email, new_ticket_id, ticket.subject)
-        
         return {"ticket_id": new_ticket_id, "message": "Ticket created successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -103,36 +104,24 @@ def add_message(msg: MessageAdd):
             "sender_type": msg.sender_type,
             "content": clean_content
         }).execute()
-        
-        # If Agent is replying, trigger email
-        if msg.sender_type == "agent":
+        if msg.sender_type == "agent" and msg.is_public:
             ticket = supabase.table("tickets").select("requester_email").eq("id", msg.ticket_id).single().execute()
             send_agent_reply(ticket.data['requester_email'], msg.ticket_id, clean_content)
-            
-        return {"status": "Message added"}
+        return {"status": "Message added and logged"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.put("/tickets/{ticket_id}/status")
 def update_status(ticket_id: str, status_data: StatusUpdate):
     try:
-        # 1. Update Status
         supabase.table("tickets").update({"status": status_data.new_status}).eq("id", ticket_id).execute()
-        
-        # 2. Notify Requester
         ticket = supabase.table("tickets").select("requester_email").eq("id", ticket_id).single().execute()
         send_agent_reply(ticket.data['requester_email'], ticket_id, f"The status of your ticket has been updated to: {status_data.new_status}")
-        
         return {"message": "Status updated and user notified"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/draft-reply")
-def draft_reply(ticket_id: str):
-    # Fetch the history to understand the context
-    ticket_data = get_ticket(ticket_id) 
-    context = str(ticket_data['timeline'])
-    
-    # Use your AI service to generate a professional reply
-    draft = get_answer_from_kb(f"Draft a professional support response based on this history: {context}")
-    return {"draft": draft}
+# Launch command
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
