@@ -80,6 +80,10 @@ with all_tabs[1]:
 if user_role == "Support Agent":
     with all_tabs[2]:
         st.header("📋 Agent Queue")
+        
+        # Session state for AI draft
+        if "ai_draft" not in st.session_state: st.session_state.ai_draft = ""
+
         if st.button("🔄 Refresh Queue"): st.rerun()
 
         try:
@@ -95,22 +99,45 @@ if user_role == "Support Agent":
                     details = requests.get(f"http://127.0.0.1:8000/tickets/{selected_id}").json()
                     st.subheader(f"Ticket: {selected_id}")
                     
-                    # Status Update Logic
-                    new_status = st.selectbox("Update Status", ["Open", "In Progress", "Resolved", "Closed"])
-                    if st.button("Update Status"):
-                        requests.put(f"http://127.0.0.1:8000/tickets/{selected_id}/status", json={"new_status": new_status})
-                        st.success(f"Status changed to {new_status} and user notified!")
+                    # 1. Status & Management Section
+                    with st.expander("Update Ticket Status & Details"):
+                        new_status = st.selectbox("Update Status", ["Open", "In Progress", "Resolved", "Closed"])
+                        if st.button("Update Status"):
+                            requests.put(f"http://127.0.0.1:8000/tickets/{selected_id}/status", json={"new_status": new_status})
+                            st.success(f"Status updated to {new_status}")
                     
-                    # Conversation History
+                    # 2. Conversation History
                     for msg in details.get('timeline', []):
+                        # Simple logic: Highlight internal notes differently if your backend sends 'is_public'
+                        sender = msg['sender_type'].upper()
                         with st.chat_message(msg['sender_type']): 
-                            st.markdown(f"**{msg['sender_type'].upper()}:** {msg['content']}")
+                            st.markdown(f"**{sender}:** {msg['content']}")
                     
-                    # Reply Form
-                    with st.form("reply_form"):
-                        reply = st.text_area("Add Agent Response")
+                    # 3. AI Drafting & Reply Form
+                    st.subheader("Respond to User")
+                    
+                    # AI Draft Button
+                    if st.button("✨ Draft Response with AI"):
+                        with st.spinner("AI is analyzing history..."):
+                            # Send history to backend to get a suggested reply
+                            context = " ".join([m['content'] for m in details.get('timeline', [])])
+                            resp = requests.post("http://127.0.0.1:8000/chat", json={"query": f"Draft a professional support response to: {context}"})
+                            st.session_state.ai_draft = resp.json().get("response", "Could not generate draft.")
+                            st.rerun()
+
+                    # The Reply Form
+                    with st.form("reply_form", clear_on_submit=True):
+                        reply = st.text_area("Agent Response", value=st.session_state.ai_draft)
+                        is_internal = st.checkbox("Mark as Internal Note (Private to Agents)")
+                        
                         if st.form_submit_button("Send Response"):
-                            requests.post("http://127.0.0.1:8000/tickets/message", json={"ticket_id": selected_id, "sender_type": "agent", "content": reply})
+                            requests.post("http://127.0.0.1:8000/tickets/message", json={
+                                "ticket_id": selected_id, 
+                                "sender_type": "agent", 
+                                "content": reply,
+                                "is_public": not is_internal # Ensure your backend accepts this
+                            })
+                            st.session_state.ai_draft = "" # Clear draft
                             st.rerun()
             else: st.info("No tickets found.")
         except Exception as e: st.error(f"Error loading dashboard: {e}")
